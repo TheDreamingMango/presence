@@ -1,6 +1,6 @@
 use std::{
     io::{self, Write},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::{Duration, Instant},
@@ -36,6 +36,7 @@ fn spawn_speaker() -> Sender<String> {
     thread::spawn(move || {
         for text in rx {
             let _ = Command::new("say")
+                .args(["-v", "Daniel"])
                 .arg(&text)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -63,13 +64,17 @@ fn ensure_ollama() {
 }
 
 /// Ask Ollama for a quote in the background; the reply lands on `tx`.
-fn request_quote(tx: Sender<String>) {
+fn request_quote(tx: Sender<String>, previous: Option<String>) {
     thread::spawn(move || {
         let prompt = std::fs::read_to_string(PROMPT_PATH).unwrap_or_default();
-        let prompt = prompt.trim();
+        let mut prompt = prompt.trim().to_string();
         if prompt.is_empty() {
             let _ = tx.send("prompt.txt is empty.".into());
             return;
+        }
+        if let Some(previous) = previous {
+            prompt.push_str("\n\nPrevious intervention (do not repeat its wording or action):\n");
+            prompt.push_str(&previous);
         }
         let mut child = match Command::new("ollama")
             .args(["run", "--think=false", &model()])
@@ -104,6 +109,7 @@ struct App {
     minutes_spoken: u64,
     quote: Option<String>,
     pending: bool,
+    sleep_preventer: Option<Child>,
     speaker: Sender<String>,
     quote_tx: Sender<String>,
     quote_rx: Receiver<String>,
@@ -119,6 +125,7 @@ impl App {
             minutes_spoken: 0,
             quote: None,
             pending: false,
+            sleep_preventer: None,
             speaker: spawn_speaker(),
             quote_tx,
             quote_rx,
@@ -128,6 +135,13 @@ impl App {
     }
 
     fn start(&mut self) {
+        self.sleep_preventer = Command::new("caffeinate")
+            .args(["-i", "-w", &std::process::id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok();
         self.running = true;
         self.started_at = Instant::now();
         self.minutes_spoken = 0;
@@ -137,11 +151,15 @@ impl App {
 
     fn stop(&mut self) {
         self.running = false;
+        if let Some(mut child) = self.sleep_preventer.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     fn fetch_quote(&mut self) {
         self.pending = true;
-        request_quote(self.quote_tx.clone());
+        request_quote(self.quote_tx.clone(), self.quote.clone());
     }
 
     fn elapsed(&self) -> Duration {
@@ -165,7 +183,7 @@ impl App {
             self.minutes_spoken = minute;
             let unit = if minute == 1 { "minute" } else { "minutes" };
             let _ = self.speaker.send(format!("{minute} {unit}"));
-            if minute % QUOTE_EVERY_MINUTES == 0 {
+            if minute.is_multiple_of(QUOTE_EVERY_MINUTES) {
                 if let Some(q) = &self.quote {
                     let _ = self.speaker.send(q.clone());
                 }
@@ -202,7 +220,11 @@ impl App {
     // ── ui ────────────────────────────────────────────────────────────────
 
     fn draw(&self, f: &mut Frame) {
-        let accent = if self.running { Color::Cyan } else { Color::DarkGray };
+        let accent = if self.running {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
         let area = center(f.area(), 64, 20);
 
         let block = Block::default()
@@ -239,7 +261,11 @@ impl App {
         } else {
             ("○", "stopped")
         };
-        let mut spans = vec![Span::raw(dot).fg(accent), Span::raw(" "), Span::raw(label).dim()];
+        let mut spans = vec![
+            Span::raw(dot).fg(accent),
+            Span::raw(" "),
+            Span::raw(label).dim(),
+        ];
         if self.pending {
             spans.push(Span::raw("  ·  thinking").dim().italic());
         }
@@ -270,6 +296,12 @@ impl App {
             .alignment(Alignment::Center),
             help,
         );
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
