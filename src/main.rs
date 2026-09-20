@@ -3,7 +3,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -377,30 +377,15 @@ fn unquote_csv_field(line: &str) -> String {
     }
 }
 
-fn quote_seed() -> u64 {
-    SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-}
-
-fn pick_quote(quotes: &[String], previous: Option<&str>, seed: u64) -> String {
+fn pick_quote(quotes: &[String], index: usize) -> String {
     if quotes.is_empty() {
         return "quotes.csv is empty.".into();
     }
-    let n = quotes.len();
-    let start = (seed as usize) % n;
-    for i in 0..n {
-        let q = &quotes[(start + i) % n];
-        if previous != Some(q.as_str()) {
-            return q.clone();
-        }
-    }
-    quotes[0].clone()
+    quotes[index % quotes.len()].clone()
 }
 
-fn fallback_quote(previous: Option<&str>) -> String {
-    pick_quote(&load_quotes(), previous, quote_seed())
+fn fallback_quote() -> String {
+    pick_quote(&load_quotes(), 0)
 }
 
 enum QuoteLine {
@@ -413,7 +398,7 @@ fn request_quote(tx: Sender<QuoteLine>, previous: Option<String>) {
     thread::spawn(move || {
         let msg = match ollama_quote(previous.as_deref()) {
             Some(text) => QuoteLine::Model(text),
-            None => QuoteLine::List(fallback_quote(previous.as_deref())),
+            None => QuoteLine::List(fallback_quote()),
         };
         let _ = tx.send(msg);
     });
@@ -492,6 +477,7 @@ struct App {
     quote_tx: Sender<QuoteLine>,
     quote_rx: Receiver<QuoteLine>,
     quotes: Option<Vec<String>>,
+    quote_index: usize,
 }
 
 impl App {
@@ -514,6 +500,7 @@ impl App {
             quote_tx,
             quote_rx,
             quotes,
+            quote_index: 0,
         };
         app.start();
         app
@@ -544,7 +531,7 @@ impl App {
 
     fn fetch_quote(&mut self) {
         if let Some(quotes) = &self.quotes {
-            let q = pick_quote(quotes, self.quote.as_deref(), quote_seed());
+            let q = pick_quote(quotes, self.quote_index);
             let _ = self.quote_tx.send(QuoteLine::List(q));
             return;
         }
@@ -584,8 +571,11 @@ impl App {
             self.last_announced = due;
             self.speaker.send(spoken_time(due));
             if quote_with(due) {
-                if let Some(q) = &self.quote {
-                    self.speaker.send(q.clone());
+                if let Some(q) = self.quote.clone() {
+                    self.speaker.send(q);
+                    if let Some(n) = self.quotes.as_ref().map(Vec::len).filter(|&n| n > 0) {
+                        self.quote_index = (self.quote_index + 1) % n;
+                    }
                 }
                 self.fetch_quote();
             }
@@ -756,21 +746,25 @@ mod tests {
     }
 
     #[test]
-    fn pick_quote_skips_previous() {
+    fn pick_quote_walks_in_order_and_loops() {
         let quotes = vec!["a".into(), "b".into(), "c".into()];
-        assert_eq!(pick_quote(&quotes, Some("a"), 0), "b");
+        assert_eq!(pick_quote(&quotes, 0), "a");
+        assert_eq!(pick_quote(&quotes, 1), "b");
+        assert_eq!(pick_quote(&quotes, 2), "c");
+        assert_eq!(pick_quote(&quotes, 3), "a");
+        assert_eq!(pick_quote(&quotes, 5), "c");
     }
 
     #[test]
     fn pick_quote_empty_is_calm() {
-        assert_eq!(pick_quote(&[], None, 0), "quotes.csv is empty.");
+        assert_eq!(pick_quote(&[], 0), "quotes.csv is empty.");
     }
 
     #[test]
     fn ollama_failure_falls_back_to_bundled_quotes() {
         let quotes = load_quotes();
-        let q = fallback_quote(None);
-        assert!(quotes.contains(&q));
+        let q = fallback_quote();
+        assert_eq!(q, quotes[0]);
         assert_ne!(q, "ollama is not available.");
     }
 
