@@ -24,6 +24,12 @@ presence
 
 `ollama pull` is optional. If Ollama and the configured model are installed, Presence starts the Ollama server when needed. The server remains running after Presence exits. Without them, Presence uses the offline list in `quotes.csv`.
 
+To pull later changes from this repo and reinstall:
+
+```sh
+./update.sh
+```
+
 ## Controls
 
 - `Space`, `Enter`, or `s` — start or stop
