@@ -19,7 +19,11 @@ use tui_big_text::{BigText, PixelSize};
 /// Read at runtime, so editing prompt.txt needs no rebuild.
 const PROMPT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/prompt.txt");
 const QUOTES_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/quotes.csv");
-const QUOTE_EVERY_MINUTES: u64 = 2;
+const ANNOUNCE_EVERY: Duration = Duration::from_secs(60);
+const DENSE_UNTIL: Duration = Duration::from_secs(15 * 60);
+const AFTER_DENSE_FIRST_GAP: Duration = Duration::from_secs(90);
+const AFTER_DENSE_EVERY: Duration = Duration::from_secs(2 * 60);
+const QUOTE_EVERY: Duration = Duration::from_secs(2 * 60);
 
 fn main() -> io::Result<()> {
     let terminal = ratatui::init();
@@ -395,42 +399,84 @@ fn pick_quote(quotes: &[String], previous: Option<&str>, seed: u64) -> String {
     quotes[0].clone()
 }
 
+fn fallback_quote(previous: Option<&str>) -> String {
+    pick_quote(&load_quotes(), previous, quote_seed())
+}
+
+enum QuoteLine {
+    Model(String),
+    List(String),
+}
+
 /// Ask Ollama for a quote in the background; the reply lands on `tx`.
-fn request_quote(tx: Sender<String>, previous: Option<String>) {
+fn request_quote(tx: Sender<QuoteLine>, previous: Option<String>) {
     thread::spawn(move || {
-        let prompt = std::fs::read_to_string(PROMPT_PATH).unwrap_or_default();
-        let mut prompt = prompt.trim().to_string();
-        if prompt.is_empty() {
-            let _ = tx.send("prompt.txt is empty.".into());
-            return;
-        }
-        if let Some(previous) = previous {
-            prompt.push_str("\n\nPrevious intervention (do not repeat its wording or action):\n");
-            prompt.push_str(&previous);
-        }
-        let mut child = match Command::new("ollama")
-            .args(["run", "--think=false", &model()])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => {
-                let _ = tx.send("ollama is not available.".into());
-                return;
-            }
+        let msg = match ollama_quote(previous.as_deref()) {
+            Some(text) => QuoteLine::Model(text),
+            None => QuoteLine::List(fallback_quote(previous.as_deref())),
         };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(prompt.as_bytes());
-        }
-        let out = child.wait_with_output().ok();
-        let text = out
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "no response from the model.".into());
-        let _ = tx.send(text);
+        let _ = tx.send(msg);
     });
+}
+
+fn ollama_quote(previous: Option<&str>) -> Option<String> {
+    let prompt = std::fs::read_to_string(PROMPT_PATH).ok()?;
+    let mut prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return None;
+    }
+    if let Some(previous) = previous {
+        prompt.push_str("\n\nPrevious intervention (do not repeat its wording or action):\n");
+        prompt.push_str(previous);
+    }
+    let mut child = Command::new("ollama")
+        .args(["run", "--think=false", &model()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(prompt.as_bytes());
+    }
+    let out = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+// ── cadence ───────────────────────────────────────────────────────────────────
+
+/// Every minute through 15:00, then 16:30, then every 2 minutes.
+fn latest_due(elapsed: Duration) -> Duration {
+    if elapsed < ANNOUNCE_EVERY {
+        return Duration::ZERO;
+    }
+    if elapsed < DENSE_UNTIL + AFTER_DENSE_FIRST_GAP {
+        let mins = elapsed.as_secs() / ANNOUNCE_EVERY.as_secs();
+        Duration::from_secs(mins.min(DENSE_UNTIL.as_secs() / 60) * 60)
+    } else {
+        let first = DENSE_UNTIL + AFTER_DENSE_FIRST_GAP;
+        let steps = (elapsed - first).as_secs() / AFTER_DENSE_EVERY.as_secs();
+        first + AFTER_DENSE_EVERY * (steps as u32)
+    }
+}
+
+fn quote_with(at: Duration) -> bool {
+    at >= DENSE_UNTIL || at.as_secs().is_multiple_of(QUOTE_EVERY.as_secs())
+}
+
+fn spoken_time(at: Duration) -> String {
+    let mins = at.as_secs() / 60;
+    let secs = at.as_secs() % 60;
+    match (mins, secs) {
+        (1, 0) => "1 minute".into(),
+        (_, 0) => format!("{mins} minutes"),
+        (1, _) => format!("1 minute {secs} seconds"),
+        (_, _) => format!("{mins} minutes {secs} seconds"),
+    }
 }
 
 // ── app ───────────────────────────────────────────────────────────────────────
@@ -438,13 +484,13 @@ fn request_quote(tx: Sender<String>, previous: Option<String>) {
 struct App {
     running: bool,
     started_at: Instant,
-    minutes_spoken: u64,
+    last_announced: Duration,
     quote: Option<String>,
     pending: bool,
     sleep_preventer: Option<Child>,
     speaker: Speaker,
-    quote_tx: Sender<String>,
-    quote_rx: Receiver<String>,
+    quote_tx: Sender<QuoteLine>,
+    quote_rx: Receiver<QuoteLine>,
     quotes: Option<Vec<String>>,
 }
 
@@ -460,7 +506,7 @@ impl App {
         let mut app = Self {
             running: false,
             started_at: Instant::now(),
-            minutes_spoken: 0,
+            last_announced: Duration::ZERO,
             quote: None,
             pending: false,
             sleep_preventer: None,
@@ -483,7 +529,7 @@ impl App {
             .ok();
         self.running = true;
         self.started_at = Instant::now();
-        self.minutes_spoken = 0;
+        self.last_announced = Duration::ZERO;
         self.quote = None;
         self.fetch_quote();
     }
@@ -499,7 +545,10 @@ impl App {
     fn fetch_quote(&mut self) {
         if let Some(quotes) = &self.quotes {
             let q = pick_quote(quotes, self.quote.as_deref(), quote_seed());
-            let _ = self.quote_tx.send(q);
+            let _ = self.quote_tx.send(QuoteLine::List(q));
+            return;
+        }
+        if self.pending {
             return;
         }
         self.pending = true;
@@ -515,19 +564,26 @@ impl App {
     }
 
     fn tick(&mut self) {
-        if let Ok(q) = self.quote_rx.try_recv() {
-            self.quote = Some(q);
+        if let Ok(line) = self.quote_rx.try_recv() {
+            self.quote = Some(match line {
+                QuoteLine::Model(q) => q,
+                QuoteLine::List(q) => {
+                    if self.quotes.is_none() {
+                        self.quotes = Some(load_quotes());
+                    }
+                    q
+                }
+            });
             self.pending = false;
         }
         if !self.running {
             return;
         }
-        let minute = self.elapsed().as_secs() / 60;
-        if minute > self.minutes_spoken {
-            self.minutes_spoken = minute;
-            let unit = if minute == 1 { "minute" } else { "minutes" };
-            self.speaker.send(format!("{minute} {unit}"));
-            if minute.is_multiple_of(QUOTE_EVERY_MINUTES) {
+        let due = latest_due(self.elapsed());
+        if due > self.last_announced {
+            self.last_announced = due;
+            self.speaker.send(spoken_time(due));
+            if quote_with(due) {
                 if let Some(q) = &self.quote {
                     self.speaker.send(q.clone());
                 }
@@ -711,6 +767,14 @@ mod tests {
     }
 
     #[test]
+    fn ollama_failure_falls_back_to_bundled_quotes() {
+        let quotes = load_quotes();
+        let q = fallback_quote(None);
+        assert!(quotes.contains(&q));
+        assert_ne!(q, "ollama is not available.");
+    }
+
+    #[test]
     fn bundled_quotes_csv_has_one_hundred_ten() {
         let src = std::fs::read_to_string(QUOTES_PATH).unwrap();
         assert_eq!(parse_quotes_csv(&src).len(), 110);
@@ -722,5 +786,55 @@ mod tests {
         assert!(list_has_model(stdout, "gemma4:12b"));
         assert!(!list_has_model(stdout, "mistral"));
         assert!(!list_has_model("NAME ID SIZE\n", "gemma4:12b"));
+    }
+
+    #[test]
+    fn cadence_is_every_minute_through_fifteen() {
+        assert_eq!(latest_due(Duration::from_secs(59)), Duration::ZERO);
+        assert_eq!(latest_due(Duration::from_secs(60)), Duration::from_secs(60));
+        assert_eq!(
+            latest_due(Duration::from_secs(119)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            latest_due(Duration::from_secs(14 * 60)),
+            Duration::from_secs(14 * 60)
+        );
+        assert_eq!(latest_due(Duration::from_secs(15 * 60)), DENSE_UNTIL);
+        assert_eq!(latest_due(Duration::from_secs(16 * 60 + 29)), DENSE_UNTIL);
+    }
+
+    #[test]
+    fn cadence_steps_to_ninety_seconds_then_every_two_minutes() {
+        let sixteen_thirty = Duration::from_secs(16 * 60 + 30);
+        let eighteen_thirty = Duration::from_secs(18 * 60 + 30);
+        assert_eq!(latest_due(sixteen_thirty), sixteen_thirty);
+        assert_eq!(
+            latest_due(Duration::from_secs(18 * 60 + 29)),
+            sixteen_thirty
+        );
+        assert_eq!(latest_due(eighteen_thirty), eighteen_thirty);
+        assert_eq!(
+            latest_due(Duration::from_secs(20 * 60 + 30)),
+            Duration::from_secs(20 * 60 + 30)
+        );
+    }
+
+    #[test]
+    fn quotes_stay_every_two_minutes_then_follow_the_new_cadence() {
+        assert!(quote_with(Duration::from_secs(2 * 60)));
+        assert!(!quote_with(Duration::from_secs(3 * 60)));
+        assert!(quote_with(DENSE_UNTIL));
+        assert!(quote_with(Duration::from_secs(16 * 60 + 30)));
+    }
+
+    #[test]
+    fn spoken_time_names_minutes_and_seconds() {
+        assert_eq!(spoken_time(Duration::from_secs(60)), "1 minute");
+        assert_eq!(spoken_time(Duration::from_secs(15 * 60)), "15 minutes");
+        assert_eq!(
+            spoken_time(Duration::from_secs(16 * 60 + 30)),
+            "16 minutes 30 seconds"
+        );
     }
 }
