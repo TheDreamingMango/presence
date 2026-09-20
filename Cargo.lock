@@ -203,15 +203,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
-name = "focus"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "ratatui",
- "tui-big-text",
-]
-
-[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -368,6 +359,15 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "presence"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "tui-big-text",
+]
 
 [[package]]
 name = "proc-macro2"

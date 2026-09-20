@@ -1,13 +1,13 @@
-# Focus
+# Presence
 
-Focus is a small macOS terminal app that helps interrupt maladaptive daydreaming. Keep it fast, calm, local-first, and easy to understand.
+Presence is a small macOS terminal app that helps interrupt maladaptive daydreaming. Keep it fast, calm, local-first, and easy to understand.
 
 ## Project Shape
 
 - `src/main.rs` contains the Ratatui UI, timer, speech queue, and Ollama integration.
 - `prompt.txt` defines the grounding-prompt contract and is read at runtime.
-- `alfred/` is the optional Alfred workflow that starts Focus in Kitty via the `presence` keyword.
-- External commands are macOS `say` and local `ollama`; do not add network services without an explicit requirement.
+- `alfred/` is the optional Alfred workflow that starts Presence in Kitty via the `presence` keyword.
+- External commands are macOS `say`, `osascript` (pause/resume other media while speaking), `pgrep`, `caffeinate`, and local `ollama`; do not add network services without an explicit requirement.
 
 ## Working Agreements
 
