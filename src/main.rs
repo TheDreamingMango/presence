@@ -3,7 +3,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -18,6 +18,7 @@ use tui_big_text::{BigText, PixelSize};
 
 /// Read at runtime, so editing prompt.txt needs no rebuild.
 const PROMPT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/prompt.txt");
+const QUOTES_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/quotes.csv");
 const QUOTE_EVERY_MINUTES: u64 = 2;
 
 fn main() -> io::Result<()> {
@@ -297,10 +298,33 @@ function run(argv) {
 }
 "#;
 
-// ── ollama ────────────────────────────────────────────────────────────────────
+// ── quotes ────────────────────────────────────────────────────────────────────
 
 fn model() -> String {
     std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma4:12b".into())
+}
+
+fn ollama_usable() -> bool {
+    let output = match Command::new("ollama")
+        .arg("list")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+    list_has_model(&String::from_utf8_lossy(&output.stdout), &model())
+}
+
+fn list_has_model(stdout: &str, name: &str) -> bool {
+    stdout
+        .lines()
+        .any(|line| match line.split_whitespace().next() {
+            Some("NAME") | None => false,
+            Some(found) => found == name,
+        })
 }
 
 /// Make sure a server is up. If one is already running this exits at once
@@ -312,6 +336,63 @@ fn ensure_ollama() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+fn load_quotes() -> Vec<String> {
+    let src = std::fs::read_to_string(QUOTES_PATH).unwrap_or_default();
+    parse_quotes_csv(&src)
+}
+
+fn parse_quotes_csv(src: &str) -> Vec<String> {
+    let mut quotes = Vec::new();
+    let mut seen_header = false;
+    for line in src.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let text = unquote_csv_field(line);
+        if text.is_empty() {
+            continue;
+        }
+        if !seen_header && text.eq_ignore_ascii_case("text") {
+            seen_header = true;
+            continue;
+        }
+        seen_header = true;
+        quotes.push(text);
+    }
+    quotes
+}
+
+fn unquote_csv_field(line: &str) -> String {
+    let line = line.trim();
+    if let Some(inner) = line.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        inner.replace("\"\"", "\"")
+    } else {
+        line.to_string()
+    }
+}
+
+fn quote_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+fn pick_quote(quotes: &[String], previous: Option<&str>, seed: u64) -> String {
+    if quotes.is_empty() {
+        return "quotes.csv is empty.".into();
+    }
+    let n = quotes.len();
+    let start = (seed as usize) % n;
+    for i in 0..n {
+        let q = &quotes[(start + i) % n];
+        if previous != Some(q.as_str()) {
+            return q.clone();
+        }
+    }
+    quotes[0].clone()
 }
 
 /// Ask Ollama for a quote in the background; the reply lands on `tx`.
@@ -364,11 +445,17 @@ struct App {
     speaker: Speaker,
     quote_tx: Sender<String>,
     quote_rx: Receiver<String>,
+    quotes: Option<Vec<String>>,
 }
 
 impl App {
     fn new() -> Self {
-        ensure_ollama();
+        let quotes = if ollama_usable() {
+            ensure_ollama();
+            None
+        } else {
+            Some(load_quotes())
+        };
         let (quote_tx, quote_rx) = mpsc::channel();
         let mut app = Self {
             running: false,
@@ -380,6 +467,7 @@ impl App {
             speaker: spawn_speaker(),
             quote_tx,
             quote_rx,
+            quotes,
         };
         app.start();
         app
@@ -409,6 +497,11 @@ impl App {
     }
 
     fn fetch_quote(&mut self) {
+        if let Some(quotes) = &self.quotes {
+            let q = pick_quote(quotes, self.quote.as_deref(), quote_seed());
+            let _ = self.quote_tx.send(q);
+            return;
+        }
         self.pending = true;
         request_quote(self.quote_tx.clone(), self.quote.clone());
     }
@@ -589,5 +682,45 @@ mod tests {
     #[test]
     fn speaker_joins_when_dropped() {
         drop(spawn_speaker());
+    }
+
+    #[test]
+    fn parse_quotes_csv_skips_header_and_blanks() {
+        let src = "\"text\"\n\n\"Hello, world.\"\n\"Second line.\"\n";
+        assert_eq!(
+            parse_quotes_csv(src),
+            vec!["Hello, world.".to_string(), "Second line.".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_quotes_csv_unescapes_quotes() {
+        let src = "text\n\"say \"\"hello\"\".\"\n";
+        assert_eq!(parse_quotes_csv(src), vec!["say \"hello\".".to_string()]);
+    }
+
+    #[test]
+    fn pick_quote_skips_previous() {
+        let quotes = vec!["a".into(), "b".into(), "c".into()];
+        assert_eq!(pick_quote(&quotes, Some("a"), 0), "b");
+    }
+
+    #[test]
+    fn pick_quote_empty_is_calm() {
+        assert_eq!(pick_quote(&[], None, 0), "quotes.csv is empty.");
+    }
+
+    #[test]
+    fn bundled_quotes_csv_has_one_hundred_ten() {
+        let src = std::fs::read_to_string(QUOTES_PATH).unwrap();
+        assert_eq!(parse_quotes_csv(&src).len(), 110);
+    }
+
+    #[test]
+    fn list_has_model_reads_name_column() {
+        let stdout = "NAME ID SIZE\ngemma4:12b abc 8GB\nllama3:latest def 2GB\n";
+        assert!(list_has_model(stdout, "gemma4:12b"));
+        assert!(!list_has_model(stdout, "mistral"));
+        assert!(!list_has_model("NAME ID SIZE\n", "gemma4:12b"));
     }
 }
