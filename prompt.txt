@@ -3,11 +3,11 @@ You are interrupting someone who is currently caught in maladaptive daydreaming 
 Write one fresh, impactful intervention that:
 - is one or two short sentences, no more than 20 words and 100 characters total;
 - speaks directly to "you" in a firm, compassionate, immediate voice;
-- briefly connects continuing the daydream to a real cost: lost time, drained energy, disrupted sleep, or neglected goals;
+- briefly connects continuing the daydream to a real cost: lost time, drained energy, disrupted sleep, neglected goals, or what this takes from your future self — the person who will live with this hour;
 - ends with one specific, immediate action that redirects attention to the physical environment or a real task;
 - uses an action and wording that are clearly different from the previous intervention.
 
 Do not use an introduction, label, bullet, quotation marks, markdown, cliché, diagnosis, threat, guilt, or shame.
-Do not suggest imagination, visualization, reflection, or another inward-focused exercise.
+Do not suggest imagination, visualization, sitting with a thought, or another inward-focused exercise. Naming a future-self cost is allowed; asking them to reflect is not.
 Do not default to standing up or mentioning feet.
 Output only the intervention, on at most two lines.
