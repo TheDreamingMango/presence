@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>com.yashpatil.start-focus</string>
+	<key>category</key>
+	<string>Tools</string>
+	<key>connections</key>
+	<dict>
+		<key>7C2E1A90-4B3D-4F6A-9E11-2D8C4B6A1F30</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>3A9F0C12-8E47-4B21-A6D5-9C1E7B4D2A88</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+	</dict>
+	<key>createdby</key>
+	<string>Yash Patil</string>
+	<key>description</key>
+	<string>Type presence to start Focus in a Kitty pane</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Start Focus</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>#!/bin/zsh --no-rcs
+exec ./start-focus.sh
+</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>11</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>3A9F0C12-8E47-4B21-A6D5-9C1E7B4D2A88</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>presence</string>
+				<key>subtext</key>
+				<string>Start Focus in a Kitty pane</string>
+				<key>text</key>
+				<string>Start Focus</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>7C2E1A90-4B3D-4F6A-9E11-2D8C4B6A1F30</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string>Type "presence" in Alfred to start Focus. If Kitty is already open, it splits a pane. If Focus is already running, it focuses that pane. If Kitty is not open, it launches Kitty with Focus.</string>
+	<key>uidata</key>
+	<dict>
+		<key>3A9F0C12-8E47-4B21-A6D5-9C1E7B4D2A88</key>
+		<dict>
+			<key>xpos</key>
+			<real>250</real>
+			<key>ypos</key>
+			<real>40</real>
+		</dict>
+		<key>7C2E1A90-4B3D-4F6A-9E11-2D8C4B6A1F30</key>
+		<dict>
+			<key>xpos</key>
+			<real>40</real>
+			<key>ypos</key>
+			<real>40</real>
+		</dict>
+	</dict>
+	<key>version</key>
+	<string>1.0.0</string>
+	<key>webaddress</key>
+	<string>https://github.com/YashPat/focus</string>
+</dict>
+</plist>
