@@ -16,9 +16,12 @@ use ratatui::{
 };
 use tui_big_text::{BigText, PixelSize};
 
-/// Read at runtime, so editing prompt.txt needs no rebuild.
+/// Prefer the checkout copies so editing needs no rebuild. If the repo moved
+/// after `cargo install`, fall back to the copies baked in at compile time.
 const PROMPT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/prompt.txt");
 const QUOTES_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/quotes.csv");
+const BUNDLED_PROMPT: &str = include_str!("../prompt.txt");
+const BUNDLED_QUOTES: &str = include_str!("../quotes.csv");
 const ANNOUNCE_EVERY: Duration = Duration::from_secs(60);
 const DENSE_UNTIL: Duration = Duration::from_secs(15 * 60);
 const AFTER_DENSE_FIRST_GAP: Duration = Duration::from_secs(90);
@@ -342,9 +345,50 @@ fn ensure_ollama() {
         .spawn();
 }
 
+fn read_or_bundled(path: &str, bundled: &str) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| bundled.to_string())
+}
+
 fn load_quotes() -> Vec<String> {
-    let src = std::fs::read_to_string(QUOTES_PATH).unwrap_or_default();
-    parse_quotes_csv(&src)
+    parse_quotes_csv(&read_or_bundled(QUOTES_PATH, BUNDLED_QUOTES))
+}
+
+#[cfg(test)]
+fn parse_quotes_md(src: &str) -> Vec<String> {
+    let mut quotes = Vec::new();
+    let mut current: Option<String> = None;
+    for line in src.lines() {
+        if let Some(rest) = numbered_quote_line(line) {
+            if let Some(quote) = current.take() {
+                quotes.push(quote);
+            }
+            current = Some(rest);
+            continue;
+        }
+        if let Some(quote) = current.as_mut() {
+            let trimmed = line.trim();
+            if line.starts_with(' ') && !trimmed.is_empty() {
+                quote.push(' ');
+                quote.push_str(trimmed);
+            }
+        }
+    }
+    if let Some(quote) = current {
+        quotes.push(quote);
+    }
+    quotes
+}
+
+#[cfg(test)]
+fn numbered_quote_line(line: &str) -> Option<String> {
+    let (num, rest) = line.split_once(". ")?;
+    if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(rest.trim().to_string())
 }
 
 fn parse_quotes_csv(src: &str) -> Vec<String> {
@@ -405,8 +449,9 @@ fn request_quote(tx: Sender<QuoteLine>, previous: Option<String>) {
 }
 
 fn ollama_quote(previous: Option<&str>) -> Option<String> {
-    let prompt = std::fs::read_to_string(PROMPT_PATH).ok()?;
-    let mut prompt = prompt.trim().to_string();
+    let mut prompt = read_or_bundled(PROMPT_PATH, BUNDLED_PROMPT)
+        .trim()
+        .to_string();
     if prompt.is_empty() {
         return None;
     }
@@ -761,6 +806,14 @@ mod tests {
     }
 
     #[test]
+    fn read_or_bundled_falls_back_when_file_missing() {
+        assert_eq!(
+            read_or_bundled("/no/such/presence-sidecar.txt", "hello"),
+            "hello"
+        );
+    }
+
+    #[test]
     fn ollama_failure_falls_back_to_bundled_quotes() {
         let quotes = load_quotes();
         let q = fallback_quote();
@@ -772,6 +825,13 @@ mod tests {
     fn bundled_quotes_csv_has_one_hundred_ten() {
         let src = std::fs::read_to_string(QUOTES_PATH).unwrap();
         assert_eq!(parse_quotes_csv(&src).len(), 110);
+    }
+
+    #[test]
+    fn quotes_csv_matches_workshop_md() {
+        let md_path = concat!(env!("CARGO_MANIFEST_DIR"), "/quotes/quotes.md");
+        let md = std::fs::read_to_string(md_path).unwrap();
+        assert_eq!(parse_quotes_md(&md), load_quotes());
     }
 
     #[test]
