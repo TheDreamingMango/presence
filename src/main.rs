@@ -1,5 +1,6 @@
 use std::{
     io::{self, Read, Write},
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -16,12 +17,12 @@ use ratatui::{
 };
 use tui_big_text::{BigText, PixelSize};
 
-/// Prefer the checkout copies so editing needs no rebuild. If the repo moved
-/// after `cargo install`, fall back to the copies baked in at compile time.
+/// Checkout copies, used when Application Support has no editable file yet.
 const PROMPT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/prompt.txt");
 const QUOTES_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/quotes.csv");
 const BUNDLED_PROMPT: &str = include_str!("../prompt.txt");
 const BUNDLED_QUOTES: &str = include_str!("../quotes.csv");
+const SUPPORT_DIR_NAME: &str = "Presence";
 const ANNOUNCE_EVERY: Duration = Duration::from_secs(60);
 const DENSE_UNTIL: Duration = Duration::from_secs(15 * 60);
 const AFTER_DENSE_FIRST_GAP: Duration = Duration::from_secs(90);
@@ -29,6 +30,7 @@ const AFTER_DENSE_EVERY: Duration = Duration::from_secs(2 * 60);
 const QUOTE_EVERY: Duration = Duration::from_secs(2 * 60);
 
 fn main() -> io::Result<()> {
+    ensure_support_files();
     let terminal = ratatui::init();
     let result = App::new().run(terminal);
     ratatui::restore();
@@ -345,15 +347,66 @@ fn ensure_ollama() {
         .spawn();
 }
 
-fn read_or_bundled(path: &str, bundled: &str) -> String {
+fn support_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join(SUPPORT_DIR_NAME),
+    )
+}
+
+/// First launch of a downloaded app has no checkout to edit. Seed the
+/// Application Support copies from the text baked in at compile time.
+fn ensure_support_files() {
+    let Some(dir) = support_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    seed_if_missing(&dir.join("prompt.txt"), BUNDLED_PROMPT);
+    seed_if_missing(&dir.join("quotes.csv"), BUNDLED_QUOTES);
+}
+
+fn seed_if_missing(path: &Path, bundled: &str) {
+    if path.exists() {
+        return;
+    }
+    let _ = std::fs::write(path, bundled);
+}
+
+fn read_text_file(path: &Path) -> Option<String> {
     std::fs::read_to_string(path)
         .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| bundled.to_string())
+        .filter(|text| !text.trim().is_empty())
+}
+
+/// Application Support, then the checkout, then the baked-in copy.
+fn read_sidecar(support: Option<&Path>, checkout: &str, bundled: &str) -> String {
+    if let Some(path) = support {
+        if let Some(text) = read_text_file(path) {
+            return text;
+        }
+    }
+    read_or_bundled(checkout, bundled)
+}
+
+fn read_or_bundled(path: &str, bundled: &str) -> String {
+    read_text_file(Path::new(path)).unwrap_or_else(|| bundled.to_string())
+}
+
+fn load_prompt() -> String {
+    let support = support_dir().map(|dir| dir.join("prompt.txt"));
+    read_sidecar(support.as_deref(), PROMPT_PATH, BUNDLED_PROMPT)
 }
 
 fn load_quotes() -> Vec<String> {
-    parse_quotes_csv(&read_or_bundled(QUOTES_PATH, BUNDLED_QUOTES))
+    let support = support_dir().map(|dir| dir.join("quotes.csv"));
+    parse_quotes_csv(&read_sidecar(
+        support.as_deref(),
+        QUOTES_PATH,
+        BUNDLED_QUOTES,
+    ))
 }
 
 #[cfg(test)]
@@ -449,9 +502,7 @@ fn request_quote(tx: Sender<QuoteLine>, previous: Option<String>) {
 }
 
 fn ollama_quote(previous: Option<&str>) -> Option<String> {
-    let mut prompt = read_or_bundled(PROMPT_PATH, BUNDLED_PROMPT)
-        .trim()
-        .to_string();
+    let mut prompt = load_prompt().trim().to_string();
     if prompt.is_empty() {
         return None;
     }
@@ -814,6 +865,50 @@ mod tests {
     }
 
     #[test]
+    fn support_file_wins_over_checkout_and_bundled() {
+        let dir = std::env::temp_dir().join(format!("presence-sidecar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let support = dir.join("prompt.txt");
+        let checkout = dir.join("checkout.txt");
+        std::fs::write(&support, "from support\n").unwrap();
+        std::fs::write(&checkout, "from checkout\n").unwrap();
+        assert_eq!(
+            read_sidecar(Some(&support), checkout.to_str().unwrap(), "bundled"),
+            "from support\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_support_file_falls_through_to_checkout() {
+        let dir = std::env::temp_dir().join(format!("presence-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let support = dir.join("prompt.txt");
+        let checkout = dir.join("checkout.txt");
+        std::fs::write(&support, "  \n").unwrap();
+        std::fs::write(&checkout, "from checkout\n").unwrap();
+        assert_eq!(
+            read_sidecar(Some(&support), checkout.to_str().unwrap(), "bundled"),
+            "from checkout\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seed_if_missing_writes_once() {
+        let dir = std::env::temp_dir().join(format!("presence-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prompt.txt");
+        seed_if_missing(&path, "first\n");
+        seed_if_missing(&path, "second\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn ollama_failure_falls_back_to_bundled_quotes() {
         let quotes = load_quotes();
         let q = fallback_quote();
@@ -831,7 +926,8 @@ mod tests {
     fn quotes_csv_matches_workshop_md() {
         let md_path = concat!(env!("CARGO_MANIFEST_DIR"), "/quotes/quotes.md");
         let md = std::fs::read_to_string(md_path).unwrap();
-        assert_eq!(parse_quotes_md(&md), load_quotes());
+        let csv = std::fs::read_to_string(QUOTES_PATH).unwrap();
+        assert_eq!(parse_quotes_md(&md), parse_quotes_csv(&csv));
     }
 
     #[test]

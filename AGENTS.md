@@ -5,7 +5,7 @@ Presence is a small macOS terminal app that helps interrupt maladaptive daydream
 ## Project Shape
 
 - `src/main.rs` contains the Ratatui UI, timer, speech queue, Ollama integration, and the offline quotes fallback.
-- `prompt.txt` defines the grounding-prompt contract and is read at runtime.
+- `prompt.txt` defines the grounding-prompt contract and is read at runtime. A downloaded app seeds and prefers `~/Library/Application Support/Presence/prompt.txt` and `quotes.csv`.
 - `quotes.csv` is the default offline list. Ollama is optional; when the configured model is available, Presence generates a fresh line instead.
 - `quotes/` is the workshop for that list: regenerate or audit `quotes.md`, then run `./quotes/to_csv.sh`.
 - `alfred/` is the optional Alfred workflow that starts Presence in Kitty via the `presence` keyword. Kitty is only needed for that workflow.

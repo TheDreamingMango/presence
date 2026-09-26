@@ -8,12 +8,21 @@ While Presence speaks, other media is paused and then resumed. That includes Mus
 
 You can run Presence from any terminal. [Ollama](https://ollama.com) and [Alfred](https://www.alfredapp.com) are optional.
 
+**[Download for Mac](https://github.com/TheDreamingMango/presence/releases/latest/download/Presence-macos.zip)**
+
+Unzip and double-click Presence. The first time, macOS asks you to confirm the app: right-click Presence, choose Open, then Open again.
+
 ## Requirements
 
 - macOS
-- Rust and Cargo
+
+Rust and Cargo are only needed to build from source.
 
 ## Setup
+
+Download the zip above, unzip it, and double-click Presence.
+
+To build from a checkout instead:
 
 ```sh
 cargo install --path . --root ~/.local
@@ -39,7 +48,7 @@ If Ollama and the `gemma4:12b` model are installed, Presence generates a fresh g
 ollama pull gemma4:12b
 ```
 
-Edit `prompt.txt` to change the style of the generated prompts. To use another model:
+The first launch writes editable copies to `~/Library/Application Support/Presence/`. Edit `prompt.txt` there to change the style of the generated prompts. If those files are missing, Presence uses the copies in this checkout, then the copies built into the app. To use another model:
 
 ```sh
 OLLAMA_MODEL=model-name presence
@@ -51,7 +60,7 @@ The offline list is written in `quotes/quotes.md` and flattened into `quotes.csv
 
 The `presence` keyword is an Alfred workflow in this repo (`alfred/`). It needs Alfred with Powerpack and [Kitty](https://sw.kovidgoyal.net/kitty/). It starts Presence in Kitty: split a pane if Kitty is already open, focus that pane if Presence is already running, or launch Kitty if it is not.
 
-1. Install Presence as above so `presence` is on your `PATH` (`~/.local/bin/presence`).
+1. Build from a checkout so `presence` is on your `PATH` (`~/.local/bin/presence`). The downloaded app does not install that command.
 2. Add this to `kitty.conf`, then quit and reopen Kitty:
 
 ```
